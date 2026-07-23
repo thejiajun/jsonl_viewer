@@ -1,0 +1,10 @@
+{
+  "name": "jsonl-viewer",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check jsonl_loader.js && node --test",
+    "serve": "python3 -m http.server 8090"
+  }
+}

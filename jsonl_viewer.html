@@ -1,44 +1,144 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
     <title>JSONL Viewer</title>
     <link rel="stylesheet" href="jsonl_styles.css">
 </head>
 <body>
-    <header>
-        <h1>📁 JSONL Data Viewer</h1>
-        <div class="header-controls">
-            <div class="instructions">
-                <details>
-                    <summary>User Guide</summary>
-                    <ul>
-                        <li>Drag & drop JSONL files anywhere on the page</li>
-                        <li>Last 5 files stored in history</li>
-                        <li>Click column buttons to change layout</li>
-                    </ul>
-                </details>
+    <header class="app-header">
+        <div class="brand">
+            <div class="brand-mark" aria-hidden="true">{ }</div>
+            <div>
+                <h1>JSONL Viewer</h1>
+                <p>Review prompts and media in one place</p>
             </div>
-            <aside class="history-panel">
-                <h3>📚 Recent Files</h3>
-                <ul id="historyList"></ul>
-            </aside>
+        </div>
+        <div class="header-actions">
+            <span class="privacy-badge">
+                <span class="status-dot" aria-hidden="true"></span>
+                Local only
+            </span>
+            <button class="button button-secondary" id="recentButton" type="button" aria-expanded="false">
+                Recent files
+            </button>
         </div>
     </header>
-    <div class="drop-zone" id="dropZone">
-        <div class="drop-content">
-            📁 Drag & Drop JSONL File Here
-            <div class="subtext">(or click to select)</div>
+
+    <main>
+        <section class="drop-zone" id="dropZone" tabindex="0" role="button" aria-label="Choose or drop a JSONL file">
+            <div class="drop-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/>
+                </svg>
+            </div>
+            <div class="drop-copy">
+                <strong>Drop a JSONL file here</strong>
+                <span>or click to choose one from your computer</span>
+            </div>
+            <button class="button button-primary" id="chooseButton" type="button">Choose file</button>
+        </section>
+        <input id="fileInput" type="file" accept=".jsonl,application/json,text/plain" hidden>
+
+        <section class="recent-panel" id="recentPanel" hidden aria-label="Recent files">
+            <div class="section-heading">
+                <div>
+                    <span class="eyebrow">Saved in this browser</span>
+                    <h2>Recent files</h2>
+                </div>
+                <button class="icon-button" id="closeRecentButton" type="button" aria-label="Close recent files">×</button>
+            </div>
+            <div class="recent-list" id="recentList"></div>
+        </section>
+
+        <div id="workspace" hidden>
+            <section class="file-bar" aria-label="Loaded file">
+                <div class="file-identity">
+                    <span class="file-icon" aria-hidden="true">JL</span>
+                    <div>
+                        <strong id="fileName"></strong>
+                        <span id="fileMeta"></span>
+                    </div>
+                </div>
+                <button class="button button-secondary" id="replaceButton" type="button">Open another</button>
+            </section>
+
+            <section class="summary" id="summary" aria-label="Dataset summary">
+                <article class="package-summary">
+                    <span class="eyebrow">Package</span>
+                    <strong id="packageName">Untitled package</strong>
+                    <span id="packageEndpoint"></span>
+                </article>
+                <article class="stat">
+                    <strong id="caseCount">0</strong>
+                    <span>cases</span>
+                </article>
+                <article class="stat">
+                    <strong id="mediaCount">0</strong>
+                    <span>media</span>
+                </article>
+                <article class="stat">
+                    <strong id="textOnlyCount">0</strong>
+                    <span>text-only</span>
+                </article>
+            </section>
+
+            <section class="toolbar" aria-label="Viewer controls">
+                <label class="search">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <circle cx="11" cy="11" r="7"></circle>
+                        <path d="m20 20-4-4"></path>
+                    </svg>
+                    <span class="sr-only">Search cases or prompts</span>
+                    <input id="searchInput" type="search" placeholder="Search cases or prompts" autocomplete="off">
+                    <kbd id="searchShortcut">/</kbd>
+                </label>
+
+                <div class="segmented-control" id="filterControl" aria-label="Filter cases">
+                    <button type="button" class="active" data-filter="all" aria-pressed="true">All</button>
+                    <button type="button" data-filter="media" aria-pressed="false">With media</button>
+                    <button type="button" data-filter="text" aria-pressed="false">Text only</button>
+                </div>
+
+                <div class="toolbar-spacer"></div>
+
+                <div class="layout-control" id="layoutControl" aria-label="Grid columns">
+                    <span>Layout</span>
+                    <button type="button" data-columns="1" aria-label="One column">1</button>
+                    <button type="button" class="active" data-columns="2" aria-label="Two columns">2</button>
+                    <button type="button" data-columns="3" aria-label="Three columns">3</button>
+                </div>
+            </section>
+
+            <div class="status-row" aria-live="polite">
+                <p id="resultStatus"></p>
+                <button class="text-button" id="errorButton" type="button" hidden></button>
+            </div>
+
+            <section class="error-panel" id="errorPanel" hidden aria-label="Parse errors">
+                <div class="section-heading">
+                    <div>
+                        <span class="eyebrow">Needs attention</span>
+                        <h2>Skipped lines</h2>
+                    </div>
+                    <button class="icon-button" id="closeErrorButton" type="button" aria-label="Close parse errors">×</button>
+                </div>
+                <ol id="errorList"></ol>
+            </section>
+
+            <section class="results-grid columns-2" id="results" aria-label="JSONL cases"></section>
+
+            <section class="no-results" id="noResults" hidden>
+                <strong>No matching cases</strong>
+                <span>Try another search or filter.</span>
+            </section>
         </div>
-    </div>
-    <input type="file" id="fileInput" hidden accept=".jsonl">
-    <div class="layout-controls">
-        <button class="layout-btn" data-cols="1">1 Column</button>
-        <button class="layout-btn" data-cols="3">3 Columns</button>
-        <button class="layout-btn" data-cols="5">5 Columns</button>
-    </div>
-    <div id="results"></div>
-    <script src="jsonl_loader.js"></script>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+    <script type="module" src="jsonl_loader.js"></script>
 </body>
 </html>
