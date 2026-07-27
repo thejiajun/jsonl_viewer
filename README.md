@@ -38,6 +38,8 @@ When it has enough evidence, the viewer adds a specialized renderer:
 - Background parsing in a Web Worker so large files do not freeze the interface.
 - A 50-card render window with pagination, keeping the DOM small even for 10,000+ cards.
 - Debounced search plus 12-at-a-time media loading inside unusually large cards.
+- Viewport-aware video playback: visible videos play with sound when the browser allows it, and pause after leaving the viewport.
+- Audio remains user-controlled and starts unmuted.
 - Collapsible raw JSON for unknown or generic fields.
 - Raw JSON and extra field elements are created only when expanded.
 - Very large field lists load 100 at a time; oversized Raw JSON previews are capped while Copy JSON remains complete.
