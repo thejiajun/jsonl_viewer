@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
     <title>JSONL Viewer</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="jsonl_styles.css">
 </head>
 <body>
@@ -13,7 +14,7 @@
             <div class="brand-mark" aria-hidden="true">{ }</div>
             <div>
                 <h1>JSONL Viewer</h1>
-                <p>Review prompts and media in one place</p>
+                <p>Review any JSONL as adaptive content cards</p>
             </div>
         </div>
         <div class="header-actions">
@@ -35,12 +36,12 @@
                 </svg>
             </div>
             <div class="drop-copy">
-                <strong>Drop a JSONL file here</strong>
+                <strong>Drop a JSON or JSONL file here</strong>
                 <span>or click to choose one from your computer</span>
             </div>
             <button class="button button-primary" id="chooseButton" type="button">Choose file</button>
         </section>
-        <input id="fileInput" type="file" accept=".jsonl,application/json,text/plain" hidden>
+        <input id="fileInput" type="file" accept=".json,.jsonl,application/json,application/x-ndjson,text/plain" hidden>
 
         <section class="recent-panel" id="recentPanel" hidden aria-label="Recent files">
             <div class="section-heading">
@@ -73,7 +74,7 @@
                 </article>
                 <article class="stat">
                     <strong id="caseCount">0</strong>
-                    <span>cases</span>
+                    <span>cards</span>
                 </article>
                 <article class="stat">
                     <strong id="mediaCount">0</strong>
@@ -81,7 +82,7 @@
                 </article>
                 <article class="stat">
                     <strong id="textOnlyCount">0</strong>
-                    <span>text-only</span>
+                    <span>no media</span>
                 </article>
             </section>
 
@@ -91,15 +92,15 @@
                         <circle cx="11" cy="11" r="7"></circle>
                         <path d="m20 20-4-4"></path>
                     </svg>
-                    <span class="sr-only">Search cases or prompts</span>
-                    <input id="searchInput" type="search" placeholder="Search cases or prompts" autocomplete="off">
+                    <span class="sr-only">Search cards or content</span>
+                    <input id="searchInput" type="search" placeholder="Search cards or content" autocomplete="off">
                     <kbd id="searchShortcut">/</kbd>
                 </label>
 
                 <div class="segmented-control" id="filterControl" aria-label="Filter cases">
                     <button type="button" class="active" data-filter="all" aria-pressed="true">All</button>
                     <button type="button" data-filter="media" aria-pressed="false">With media</button>
-                    <button type="button" data-filter="text" aria-pressed="false">Text only</button>
+                    <button type="button" data-filter="text" aria-pressed="false">No media</button>
                 </div>
 
                 <div class="toolbar-spacer"></div>
@@ -114,7 +115,14 @@
 
             <div class="status-row" aria-live="polite">
                 <p id="resultStatus"></p>
-                <button class="text-button" id="errorButton" type="button" hidden></button>
+                <div class="status-actions">
+                    <button class="text-button" id="errorButton" type="button" hidden></button>
+                    <nav class="pagination" id="pagination" aria-label="Card pages" hidden>
+                        <button type="button" id="previousPageButton" aria-label="Previous page">‹</button>
+                        <span id="pageIndicator"></span>
+                        <button type="button" id="nextPageButton" aria-label="Next page">›</button>
+                    </nav>
+                </div>
             </div>
 
             <section class="error-panel" id="errorPanel" hidden aria-label="Parse errors">
@@ -128,10 +136,10 @@
                 <ol id="errorList"></ol>
             </section>
 
-            <section class="results-grid columns-2" id="results" aria-label="JSONL cases"></section>
+            <section class="results-grid columns-2" id="results" aria-label="JSONL content cards"></section>
 
             <section class="no-results" id="noResults" hidden>
-                <strong>No matching cases</strong>
+                <strong>No matching cards</strong>
                 <span>Try another search or filter.</span>
             </section>
         </div>
