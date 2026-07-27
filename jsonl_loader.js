@@ -1,6 +1,7 @@
 import {
     filterCases,
     formatBytes,
+    paginateCases,
     parseJSONL,
 } from './jsonl_parser.mjs';
 
@@ -8,6 +9,16 @@ const DB_NAME = 'jsonl-viewer';
 const STORE_NAME = 'recent-files';
 const MAX_RECENT_FILES = 5;
 const LAYOUT_KEY = 'jsonl-viewer-columns';
+const PAGE_SIZE = 50;
+const MEDIA_BATCH_SIZE = 12;
+const TEXT_BATCH_SIZE = 12;
+const FIELD_BATCH_SIZE = 100;
+const SEARCH_DEBOUNCE_MS = 180;
+const MAX_RENDERED_ERRORS = 100;
+const RAW_PREVIEW_LIMIT = 200_000;
+const FIELD_VALUE_PREVIEW_LIMIT = 2_000;
+let loadSequence = 0;
+let activeParse = null;
 
 const state = {
     dataset: null,
@@ -15,6 +26,7 @@ const state = {
     fileSize: 0,
     filter: 'all',
     query: '',
+    page: 0,
 };
 
 const elements = {
@@ -37,6 +49,10 @@ const elements = {
     resultStatus: document.querySelector('#resultStatus'),
     results: document.querySelector('#results'),
     noResults: document.querySelector('#noResults'),
+    pagination: document.querySelector('#pagination'),
+    previousPageButton: document.querySelector('#previousPageButton'),
+    pageIndicator: document.querySelector('#pageIndicator'),
+    nextPageButton: document.querySelector('#nextPageButton'),
     errorButton: document.querySelector('#errorButton'),
     errorPanel: document.querySelector('#errorPanel'),
     errorList: document.querySelector('#errorList'),
@@ -62,6 +78,58 @@ function showToast(message) {
     showToast.timeout = window.setTimeout(() => {
         elements.toast.hidden = true;
     }, 2200);
+}
+
+function debounce(callback, delay) {
+    let timeout;
+    const debounced = (...args) => {
+        window.clearTimeout(timeout);
+        timeout = window.setTimeout(() => callback(...args), delay);
+    };
+    debounced.cancel = () => window.clearTimeout(timeout);
+    return debounced;
+}
+
+function cancelActiveParse() {
+    if (!activeParse) return;
+    const parse = activeParse;
+    activeParse = null;
+    parse.worker.terminate();
+    parse.reject(new Error('Parsing cancelled'));
+}
+
+function parseInWorker(text, formatHint) {
+    cancelActiveParse();
+    if (!window.Worker) return Promise.resolve(parseJSONL(text, formatHint));
+
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(
+            new URL('./jsonl_worker.js', import.meta.url),
+            { type: 'module' },
+        );
+        const id = `${Date.now()}-${Math.random()}`;
+        activeParse = { reject, worker };
+
+        const finish = () => {
+            worker.terminate();
+            if (activeParse?.worker === worker) activeParse = null;
+        };
+
+        worker.addEventListener('message', (event) => {
+            if (event.data.id !== id) return;
+            finish();
+            if (event.data.error) {
+                reject(new Error(event.data.error));
+                return;
+            }
+            resolve(event.data.dataset);
+        });
+        worker.addEventListener('error', (event) => {
+            finish();
+            reject(new Error(event.message || 'Background parser failed'));
+        }, { once: true });
+        worker.postMessage({ id, text, formatHint });
+    });
 }
 
 async function copyText(text, successMessage) {
@@ -134,6 +202,181 @@ function buildMediaItem(media, mediaIndex) {
     return figure;
 }
 
+function buildTextSection(block, primary = false) {
+    const section = createElement(
+        'section',
+        primary ? 'prompt-section' : 'content-text-section',
+    );
+    const heading = createElement('div', 'prompt-heading');
+    heading.append(createElement('span', 'eyebrow', block.label));
+
+    const copyButton = createElement('button', 'copy-button', 'Copy');
+    copyButton.type = 'button';
+    copyButton.addEventListener('click', () => copyText(block.text, `${block.label} copied`));
+    heading.append(copyButton);
+
+    const content = createElement(
+        'p',
+        `prompt${block.text.length > 240 ? ' collapsed' : ''}`,
+        block.text,
+    );
+    section.append(heading, content);
+
+    if (block.text.length > 240) {
+        const expandButton = createElement('button', 'expand-button', 'Show more');
+        expandButton.type = 'button';
+        expandButton.addEventListener('click', () => {
+            const isCollapsed = content.classList.toggle('collapsed');
+            expandButton.textContent = isCollapsed ? 'Show more' : 'Show less';
+        });
+        section.append(expandButton);
+    }
+
+    return section;
+}
+
+function appendTextBlocks(card, textBlocks) {
+    let renderedCount = 0;
+    const loadMoreButton = createElement('button', 'load-more-button text-load-more-button');
+    loadMoreButton.type = 'button';
+
+    function renderNextBatch() {
+        const end = Math.min(renderedCount + TEXT_BATCH_SIZE, textBlocks.length);
+        const fragment = document.createDocumentFragment();
+        for (let index = renderedCount; index < end; index += 1) {
+            fragment.append(buildTextSection(textBlocks[index]));
+        }
+        card.insertBefore(fragment, loadMoreButton);
+        renderedCount = end;
+
+        const remaining = textBlocks.length - renderedCount;
+        loadMoreButton.hidden = remaining === 0;
+        loadMoreButton.textContent =
+            `Load ${Math.min(TEXT_BATCH_SIZE, remaining)} more text blocks`;
+    }
+
+    loadMoreButton.addEventListener('click', renderNextBatch);
+    card.append(loadMoreButton);
+    renderNextBatch();
+}
+
+function buildFieldRow(field) {
+    const row = createElement('div', 'field-row');
+    const label = createElement('span', 'field-label', field.label);
+    label.title = field.path;
+    const text = String(field.value);
+    const preview = text.length > FIELD_VALUE_PREVIEW_LIMIT
+        ? `${text.slice(0, FIELD_VALUE_PREVIEW_LIMIT)}…`
+        : text;
+
+    let value;
+    if (field.kind === 'link') {
+        value = createElement('a', 'field-value field-link', preview);
+        value.href = field.value;
+        value.target = '_blank';
+        value.rel = 'noreferrer';
+    } else {
+        value = createElement('span', `field-value kind-${field.kind}`, preview);
+    }
+
+    row.append(label, value);
+    return row;
+}
+
+function buildFieldsSection(fields) {
+    const section = createElement('section', 'fields-section');
+    const heading = createElement('div', 'media-section-header');
+    heading.append(
+        createElement('span', 'eyebrow', 'Fields'),
+        createElement('span', 'media-total', `${fields.length} values`),
+    );
+
+    const visibleFields = fields.slice(0, 8);
+    const list = createElement('div', 'field-list');
+    list.append(...visibleFields.map(buildFieldRow));
+    section.append(heading, list);
+
+    if (fields.length > visibleFields.length) {
+        const details = createElement('details', 'more-fields');
+        const remainingFields = fields.slice(visibleFields.length);
+        const summary = createElement(
+            'summary',
+            '',
+            `Show ${remainingFields.length} more`,
+        );
+        const remainingList = createElement('div', 'field-list');
+        const loadMoreButton = createElement('button', 'load-more-button');
+        loadMoreButton.type = 'button';
+        let renderedCount = 0;
+
+        function renderNextFieldBatch() {
+            const end = Math.min(
+                renderedCount + FIELD_BATCH_SIZE,
+                remainingFields.length,
+            );
+            const fragment = document.createDocumentFragment();
+            for (let index = renderedCount; index < end; index += 1) {
+                fragment.append(buildFieldRow(remainingFields[index]));
+            }
+            remainingList.append(fragment);
+            renderedCount = end;
+
+            const remaining = remainingFields.length - renderedCount;
+            loadMoreButton.hidden = remaining === 0;
+            loadMoreButton.textContent =
+                `Load ${Math.min(FIELD_BATCH_SIZE, remaining)} more fields`;
+        }
+
+        loadMoreButton.addEventListener('click', renderNextFieldBatch);
+        details.append(summary);
+        details.addEventListener('toggle', () => {
+            if (!details.open || details.dataset.loaded) return;
+            renderNextFieldBatch();
+            details.append(remainingList, loadMoreButton);
+            details.dataset.loaded = 'true';
+        });
+        section.append(details);
+    }
+
+    return section;
+}
+
+function buildMediaSection(mediaItems) {
+    const mediaSection = createElement('section', 'media-section');
+    const mediaHeader = createElement('div', 'media-section-header');
+    mediaHeader.append(
+        createElement('span', 'eyebrow', 'Media'),
+        createElement('span', 'media-total', `${mediaItems.length} media`),
+    );
+    const gallery = createElement(
+        'div',
+        `media-gallery count-${Math.min(mediaItems.length, 4)}`,
+    );
+    let renderedCount = 0;
+
+    const loadMoreButton = createElement('button', 'load-more-button');
+    loadMoreButton.type = 'button';
+
+    function renderNextBatch() {
+        const end = Math.min(renderedCount + MEDIA_BATCH_SIZE, mediaItems.length);
+        const fragment = document.createDocumentFragment();
+        for (let index = renderedCount; index < end; index += 1) {
+            fragment.append(buildMediaItem(mediaItems[index], index));
+        }
+        gallery.append(fragment);
+        renderedCount = end;
+
+        const remaining = mediaItems.length - renderedCount;
+        loadMoreButton.hidden = remaining === 0;
+        loadMoreButton.textContent = `Load ${Math.min(MEDIA_BATCH_SIZE, remaining)} more media`;
+    }
+
+    loadMoreButton.addEventListener('click', renderNextBatch);
+    renderNextBatch();
+    mediaSection.append(mediaHeader, gallery, loadMoreButton);
+    return mediaSection;
+}
+
 function buildCaseCard(item) {
     const card = createElement('article', 'case-card');
     card.dataset.caseId = item.id;
@@ -152,70 +395,52 @@ function buildCaseCard(item) {
     }
     if (item.model) chips.append(buildChip(item.model, 'model-chip'));
     header.append(identity, chips);
+    card.append(header);
 
-    const promptSection = createElement('section', 'prompt-section');
-    const promptHeading = createElement('div', 'prompt-heading');
-    promptHeading.append(createElement('span', 'eyebrow', 'Prompt'));
-
-    const copyPromptButton = createElement('button', 'copy-button', 'Copy');
-    copyPromptButton.type = 'button';
-    copyPromptButton.addEventListener('click', () => copyText(item.prompt, 'Prompt copied'));
-    promptHeading.append(copyPromptButton);
-
-    const prompt = createElement(
-        'p',
-        `prompt${item.prompt.length > 240 ? ' collapsed' : ''}`,
-        item.prompt || 'No text prompt',
-    );
-    promptSection.append(promptHeading, prompt);
-
-    if (item.prompt.length > 240) {
-        const expandButton = createElement('button', 'expand-button', 'Show more');
-        expandButton.type = 'button';
-        expandButton.addEventListener('click', () => {
-            const isCollapsed = prompt.classList.toggle('collapsed');
-            expandButton.textContent = isCollapsed ? 'Show more' : 'Show less';
-        });
-        promptSection.append(expandButton);
-    }
-
-    card.append(header, promptSection);
+    if (item.primaryText) card.append(buildTextSection(item.primaryText, true));
+    if (item.textBlocks.length) appendTextBlocks(card, item.textBlocks);
 
     if (item.media.length) {
-        const mediaSection = createElement('section', 'media-section');
-        const mediaHeader = createElement('div', 'media-section-header');
-        mediaHeader.append(
-            createElement('span', 'eyebrow', 'References'),
-            createElement('span', 'media-total', `${item.media.length} media`),
-        );
-        const gallery = createElement('div', `media-gallery count-${Math.min(item.media.length, 4)}`);
-        item.media.forEach((media, index) => gallery.append(buildMediaItem(media, index)));
-        mediaSection.append(mediaHeader, gallery);
-        card.append(mediaSection);
-    } else {
+        card.append(buildMediaSection(item.media));
+    } else if (item.primaryText || item.textBlocks.length) {
         const empty = createElement('section', 'text-only-state');
         const emptyIcon = createElement('span', 'text-only-icon', 'T');
         const copy = createElement('div');
         copy.append(
-            createElement('strong', '', 'Text-only case'),
-            createElement('span', '', 'This request has no media references.'),
+            createElement('strong', '', 'No media attached'),
+            createElement('span', '', 'This card contains text or structured fields only.'),
         );
         empty.append(emptyIcon, copy);
         card.append(empty);
     }
 
+    if (item.fields.length) card.append(buildFieldsSection(item.fields));
+
     const rawDetails = createElement('details', 'raw-details');
     const rawSummary = createElement('summary');
+    const isRawPreviewCapped = item.rawText.length > RAW_PREVIEW_LIMIT;
     rawSummary.append(
         createElement('span', '', 'Raw JSON'),
-        createElement('span', 'raw-hint', 'View source'),
+        createElement(
+            'span',
+            'raw-hint',
+            isRawPreviewCapped ? 'Preview capped · copy remains complete' : 'View source',
+        ),
     );
-    const rawContent = createElement('div', 'raw-content');
-    const rawCopyButton = createElement('button', 'copy-button', 'Copy JSON');
-    rawCopyButton.type = 'button';
-    rawCopyButton.addEventListener('click', () => copyText(item.rawText, 'JSON copied'));
-    rawContent.append(rawCopyButton, createElement('pre', '', item.rawText));
-    rawDetails.append(rawSummary, rawContent);
+    rawDetails.append(rawSummary);
+    rawDetails.addEventListener('toggle', () => {
+        if (!rawDetails.open || rawDetails.dataset.loaded) return;
+        const rawContent = createElement('div', 'raw-content');
+        const rawCopyButton = createElement('button', 'copy-button', 'Copy JSON');
+        rawCopyButton.type = 'button';
+        rawCopyButton.addEventListener('click', () => copyText(item.rawText, 'JSON copied'));
+        const preview = isRawPreviewCapped
+            ? `${item.rawText.slice(0, RAW_PREVIEW_LIMIT)}\n\n… Preview capped for performance. Copy JSON includes the complete value.`
+            : item.rawText;
+        rawContent.append(rawCopyButton, createElement('pre', '', preview));
+        rawDetails.append(rawContent);
+        rawDetails.dataset.loaded = 'true';
+    });
     card.append(rawDetails);
 
     return card;
@@ -229,7 +454,7 @@ function renderErrors(errors) {
     if (!errors.length) return;
     elements.errorButton.textContent = `${errors.length} skipped ${errors.length === 1 ? 'line' : 'lines'}`;
 
-    errors.forEach((error) => {
+    errors.slice(0, MAX_RENDERED_ERRORS).forEach((error) => {
         const item = createElement('li');
         const heading = createElement('strong', '', `Line ${error.line}`);
         const message = createElement('span', '', error.message);
@@ -237,6 +462,15 @@ function renderErrors(errors) {
         item.append(heading, message, source);
         elements.errorList.append(item);
     });
+
+    if (errors.length > MAX_RENDERED_ERRORS) {
+        const remaining = createElement(
+            'li',
+            'error-overflow',
+            `${errors.length - MAX_RENDERED_ERRORS} more skipped lines are not rendered to protect page performance.`,
+        );
+        elements.errorList.append(remaining);
+    }
 }
 
 function renderDataset() {
@@ -244,10 +478,31 @@ function renderDataset() {
     if (!dataset) return;
 
     const visibleItems = filterCases(dataset.items, state.query, state.filter);
-    elements.results.replaceChildren(...visibleItems.map(buildCaseCard));
+    const page = paginateCases(visibleItems, state.page, PAGE_SIZE);
+    state.page = page.page;
+    elements.results.replaceChildren(...page.items.map(buildCaseCard));
     elements.noResults.hidden = visibleItems.length !== 0;
+    elements.pagination.hidden = visibleItems.length === 0 || page.pageCount === 1;
+    elements.previousPageButton.disabled = page.page === 0;
+    elements.nextPageButton.disabled = page.page === page.pageCount - 1;
+    elements.pageIndicator.textContent = `Page ${page.page + 1} of ${page.pageCount}`;
+
+    if (!visibleItems.length) {
+        elements.resultStatus.textContent = `0 of ${dataset.items.length} cards match`;
+        return;
+    }
+
+    const range = page.start + 1 === page.end
+        ? `${page.end}`
+        : `${page.start + 1}–${page.end}`;
+    if (visibleItems.length === dataset.items.length) {
+        elements.resultStatus.textContent =
+            `Showing ${range} of ${dataset.items.length} ${dataset.items.length === 1 ? 'card' : 'cards'}`;
+        return;
+    }
+
     elements.resultStatus.textContent =
-        `Showing ${visibleItems.length} of ${dataset.items.length} ${dataset.items.length === 1 ? 'case' : 'cases'}`;
+        `Showing ${range} of ${visibleItems.length} matching cards (${dataset.items.length} total)`;
 }
 
 function updateSummary(dataset) {
@@ -261,15 +516,33 @@ function updateSummary(dataset) {
 }
 
 async function loadText(text, fileName, fileSize, saveRecent = true) {
-    const dataset = parseJSONL(text);
+    const sequence = ++loadSequence;
+    const formatHint = fileName.toLocaleLowerCase().endsWith('.jsonl')
+        ? 'jsonl'
+        : fileName.toLocaleLowerCase().endsWith('.json')
+            ? 'json'
+            : 'auto';
+    showToast('Parsing in the background…');
+    let dataset;
+    try {
+        dataset = await parseInWorker(text, formatHint);
+    } catch (error) {
+        if (sequence !== loadSequence) return;
+        throw error;
+    }
+    if (sequence !== loadSequence) return;
+
+    updateSearch.cancel();
     state.dataset = dataset;
     state.fileName = fileName;
     state.fileSize = fileSize;
     state.filter = 'all';
     state.query = '';
+    state.page = 0;
 
     elements.fileName.textContent = fileName;
-    elements.fileMeta.textContent = `${formatBytes(fileSize)} · ${dataset.validLineCount} valid lines`;
+    elements.fileMeta.textContent =
+        `${formatBytes(fileSize)} · ${dataset.format.toUpperCase()} · ${dataset.items.length} ${dataset.items.length === 1 ? 'card' : 'cards'}`;
     elements.searchInput.value = '';
     elements.filterControl.querySelectorAll('button').forEach((button) => {
         const isActive = button.dataset.filter === 'all';
@@ -293,8 +566,8 @@ async function handleFiles(files) {
     const file = files?.[0];
     if (!file) return;
 
-    if (!file.name.toLowerCase().endsWith('.jsonl')) {
-        showToast('Choose a .jsonl file');
+    if (!/\.(jsonl|json)$/i.test(file.name)) {
+        showToast('Choose a .json or .jsonl file');
         return;
     }
 
@@ -434,8 +707,7 @@ elements.fileInput.addEventListener('change', (event) => handleFiles(event.targe
 });
 
 elements.searchInput.addEventListener('input', (event) => {
-    state.query = event.target.value;
-    renderDataset();
+    updateSearch(event.target.value);
 });
 elements.searchInput.addEventListener('focus', () => {
     elements.searchShortcut.hidden = true;
@@ -459,6 +731,7 @@ elements.filterControl.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-filter]');
     if (!button) return;
     state.filter = button.dataset.filter;
+    state.page = 0;
     elements.filterControl.querySelectorAll('button').forEach((candidate) => {
         const isActive = candidate === button;
         candidate.classList.toggle('active', isActive);
@@ -466,6 +739,21 @@ elements.filterControl.addEventListener('click', (event) => {
     });
     renderDataset();
 });
+
+const updateSearch = debounce((query) => {
+    state.query = query;
+    state.page = 0;
+    renderDataset();
+}, SEARCH_DEBOUNCE_MS);
+
+function changePage(delta) {
+    state.page += delta;
+    renderDataset();
+    elements.resultStatus.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+elements.previousPageButton.addEventListener('click', () => changePage(-1));
+elements.nextPageButton.addEventListener('click', () => changePage(1));
 
 elements.layoutControl.addEventListener('click', (event) => {
     const button = event.target.closest('button[data-columns]');

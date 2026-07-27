@@ -1,6 +1,6 @@
 # JSONL Viewer
 
-A local-first viewer for reviewing JSONL prompts and media references. Files stay in your browser and are never uploaded.
+A local-first viewer that renders every JSONL line as an adaptive content card. Files stay in your browser and are never uploaded.
 
 ## Run locally
 
@@ -8,27 +8,39 @@ A local-first viewer for reviewing JSONL prompts and media references. Files sta
 npm run serve
 ```
 
-Open [http://localhost:8090/jsonl_viewer.html](http://localhost:8090/jsonl_viewer.html), then drag a `.jsonl` file onto the page.
+Open [http://localhost:8090/jsonl_viewer.html](http://localhost:8090/jsonl_viewer.html), then drag a `.json` or `.jsonl` file onto the page.
 
-Opening the HTML file directly also works in most browsers, but a local server is recommended because the app uses JavaScript modules.
+Use the deployed site or a local server. Do not open the HTML through `file://`; browsers can block its JavaScript modules from loading.
 
-## Supported shape
+## Content detection
 
-The viewer works with one JSON object per line. It understands:
+The viewer accepts:
 
-- An optional package metadata line with `package_id`, `item_count`, or `endpoint`.
-- Case identifiers in `id`.
-- Prompts in `request.content[]` entries with `type: "text"`.
-- Images, videos, and audio links in `image_url`, `video_url`, and `audio_url`.
-- Request metadata such as `model`, `ratio`, and `duration`.
+- A JSON object as one card.
+- A JSON array as one card per array element.
+- JSONL as one card per valid line.
 
-Unknown fields remain in the parsed source but are not shown in the review cards.
+Every value remains available in Raw JSON; common values also receive adaptive card renderers. Adaptive analysis is capped at 2,000 values and 100 nesting levels per card.
+
+When it has enough evidence, the viewer adds a specialized renderer:
+
+- Text and prompt containers use explicit text types, common semantic field names, or long-form text.
+- Image, video, and audio containers use an explicit type or MIME, a recognizable file extension, or a strong field-name hint.
+- Unknown URLs stay as normal links. The viewer does not make network requests just to guess their type.
+- Numbers, booleans, nulls, arrays, nested objects, and unknown strings use the generic Fields container.
+- An optional package metadata line is identified by `package_id` or `item_count` and may also include `endpoint`.
 
 ## Features
 
-- Prompt and media review cards, including text-only cases.
+- One content card for every valid JSONL line.
+- Specialized text, prompt, image, video, audio, link, and structured-field renderers.
 - Search and media-presence filters.
+- Background parsing in a Web Worker so large files do not freeze the interface.
+- A 50-card render window with pagination, keeping the DOM small even for 10,000+ cards.
+- Debounced search plus 12-at-a-time media loading inside unusually large cards.
 - Collapsible raw JSON for unknown or generic fields.
+- Raw JSON and extra field elements are created only when expanded.
+- Very large field lists load 100 at a time; oversized Raw JSON previews are capped while Copy JSON remains complete.
 - One, two, or three-column layouts.
 - Line-numbered parse errors without blocking valid entries.
 - Copy actions for prompts and media URLs.
@@ -40,3 +52,5 @@ Unknown fields remain in the parsed source but are not shown in the review cards
 ```bash
 npm run check
 ```
+
+The automated suite includes a 10,000-card parsing and pagination regression test.
