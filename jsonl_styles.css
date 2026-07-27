@@ -953,23 +953,6 @@ kbd {
     text-decoration: none;
 }
 
-.media-error::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: rgb(248 249 251 / 88%);
-}
-
-.media-error-message {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    z-index: 1;
-    color: var(--text-secondary);
-    font-size: 11px;
-    transform: translate(-50%, -50%);
-}
-
 .text-only-state {
     gap: 10px;
     margin: 14px;

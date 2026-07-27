@@ -27,6 +27,8 @@ const state = {
     filter: 'all',
     query: '',
     page: 0,
+    unavailableMediaKeys: new Set(),
+    mediaAvailabilityVersion: 0,
 };
 
 const elements = {
@@ -153,7 +155,27 @@ function buildChip(text, variant = '') {
     return createElement('span', `chip${variant ? ` ${variant}` : ''}`, text);
 }
 
-function buildMediaItem(media, mediaIndex) {
+function mediaAvailabilityKey(media) {
+    return `${media.type}\u0000${media.url}`;
+}
+
+function isMediaAvailable(media) {
+    return !state.unavailableMediaKeys.has(mediaAvailabilityKey(media));
+}
+
+function initializeMediaAvailability() {
+    state.mediaAvailabilityVersion += 1;
+    state.unavailableMediaKeys = new Set();
+}
+
+function markMediaUnavailable(media) {
+    const key = mediaAvailabilityKey(media);
+    if (state.unavailableMediaKeys.has(key)) return false;
+    state.unavailableMediaKeys.add(key);
+    return true;
+}
+
+function buildMediaItem(media, mediaIndex, onUnavailable) {
     const figure = createElement('figure', 'media-item');
     const frame = createElement('div', 'media-frame');
     const label = createElement(
@@ -179,12 +201,10 @@ function buildMediaItem(media, mediaIndex) {
         preview.alt = media.role ? `${media.role} reference` : `Image reference ${mediaIndex + 1}`;
     }
 
-    preview.src = media.url;
     preview.addEventListener('error', () => {
-        frame.classList.add('media-error');
-        const message = createElement('span', 'media-error-message', 'Preview unavailable');
-        frame.append(message);
+        onUnavailable(media);
     }, { once: true });
+    preview.src = media.url;
 
     const actions = createElement('div', 'media-actions');
     const openLink = createElement('a', 'media-action', 'Open');
@@ -341,34 +361,119 @@ function buildFieldsSection(fields) {
     return section;
 }
 
+function buildUnavailableMediaState() {
+    const unavailable = createElement('section', 'text-only-state');
+    const unavailableIcon = createElement('span', 'text-only-icon', '!');
+    const copy = createElement('div');
+    copy.append(
+        createElement('strong', '', 'Media previews unavailable'),
+        createElement('span', '', 'The referenced media could not be loaded.'),
+    );
+    unavailable.append(unavailableIcon, copy);
+    return unavailable;
+}
+
 function buildMediaSection(mediaItems) {
+    const availabilityVersion = state.mediaAvailabilityVersion;
+    const indexesByKey = new Map();
+    mediaItems.forEach((media, index) => {
+        const key = mediaAvailabilityKey(media);
+        const indexes = indexesByKey.get(key) || [];
+        indexes.push(index);
+        indexesByKey.set(key, indexes);
+    });
+
     const mediaSection = createElement('section', 'media-section');
     const mediaHeader = createElement('div', 'media-section-header');
+    const mediaTotal = createElement('span', 'media-total', `${mediaItems.length} media`);
     mediaHeader.append(
         createElement('span', 'eyebrow', 'Media'),
-        createElement('span', 'media-total', `${mediaItems.length} media`),
+        mediaTotal,
     );
     const gallery = createElement(
         'div',
         `media-gallery count-${Math.min(mediaItems.length, 4)}`,
     );
     let renderedCount = 0;
+    let availableCount = mediaItems.length;
+    let remainingAvailableCount = mediaItems.length;
+    const unavailableIndexes = new Set();
+    const figuresByIndex = new Map();
 
     const loadMoreButton = createElement('button', 'load-more-button');
     loadMoreButton.type = 'button';
 
+    function replaceWithUnavailableState() {
+        if (mediaSection.parentNode) {
+            mediaSection.replaceWith(buildUnavailableMediaState());
+        }
+    }
+
+    function markSectionMediaUnavailable(media) {
+        const indexes = indexesByKey.get(mediaAvailabilityKey(media)) || [];
+        indexes.forEach((index) => {
+            if (unavailableIndexes.has(index)) return;
+            unavailableIndexes.add(index);
+            availableCount -= 1;
+            if (index >= renderedCount) remainingAvailableCount -= 1;
+            figuresByIndex.get(index)?.remove();
+            figuresByIndex.delete(index);
+        });
+    }
+
+    function handleUnavailableMedia(media) {
+        if (availabilityVersion !== state.mediaAvailabilityVersion) return;
+        markSectionMediaUnavailable(media);
+        markMediaUnavailable(media);
+        mediaTotal.textContent = `${availableCount} media`;
+        gallery.className =
+            `media-gallery count-${Math.min(gallery.childElementCount, 4)}`;
+        updateLoadMoreButton();
+        if (gallery.childElementCount !== 0) return;
+        if (renderedCount < mediaItems.length) {
+            renderNextBatch();
+            return;
+        }
+        replaceWithUnavailableState();
+    }
+
+    function updateLoadMoreButton() {
+        loadMoreButton.hidden = remainingAvailableCount === 0;
+        loadMoreButton.textContent =
+            `Load ${Math.min(MEDIA_BATCH_SIZE, remainingAvailableCount)} more media`;
+    }
+
     function renderNextBatch() {
-        const end = Math.min(renderedCount + MEDIA_BATCH_SIZE, mediaItems.length);
         const fragment = document.createDocumentFragment();
-        for (let index = renderedCount; index < end; index += 1) {
-            fragment.append(buildMediaItem(mediaItems[index], index));
+        let addedCount = 0;
+        while (
+            renderedCount < mediaItems.length &&
+            addedCount < MEDIA_BATCH_SIZE
+        ) {
+            const index = renderedCount;
+            const media = mediaItems[index];
+            if (!isMediaAvailable(media)) {
+                markSectionMediaUnavailable(media);
+                renderedCount += 1;
+                continue;
+            }
+            renderedCount += 1;
+            remainingAvailableCount -= 1;
+            const figure = buildMediaItem(media, index, handleUnavailableMedia);
+            figuresByIndex.set(index, figure);
+            fragment.append(figure);
+            addedCount += 1;
         }
         gallery.append(fragment);
-        renderedCount = end;
-
-        const remaining = mediaItems.length - renderedCount;
-        loadMoreButton.hidden = remaining === 0;
-        loadMoreButton.textContent = `Load ${Math.min(MEDIA_BATCH_SIZE, remaining)} more media`;
+        gallery.className =
+            `media-gallery count-${Math.min(gallery.childElementCount, 4)}`;
+        updateLoadMoreButton();
+        if (
+            gallery.childElementCount === 0 &&
+            remainingAvailableCount === 0
+        ) {
+            replaceWithUnavailableState();
+        }
     }
 
     loadMoreButton.addEventListener('click', renderNextBatch);
@@ -400,8 +505,11 @@ function buildCaseCard(item) {
     if (item.primaryText) card.append(buildTextSection(item.primaryText, true));
     if (item.textBlocks.length) appendTextBlocks(card, item.textBlocks);
 
-    if (item.media.length) {
-        card.append(buildMediaSection(item.media));
+    const availableMedia = item.media.filter(isMediaAvailable);
+    if (availableMedia.length) {
+        card.append(buildMediaSection(availableMedia));
+    } else if (item.media.length) {
+        card.append(buildUnavailableMediaState());
     } else if (item.primaryText || item.textBlocks.length) {
         const empty = createElement('section', 'text-only-state');
         const emptyIcon = createElement('span', 'text-only-icon', 'T');
@@ -477,7 +585,11 @@ function renderDataset() {
     const dataset = state.dataset;
     if (!dataset) return;
 
-    const visibleItems = filterCases(dataset.items, state.query, state.filter);
+    const visibleItems = filterCases(
+        dataset.items,
+        state.query,
+        state.filter,
+    );
     const page = paginateCases(visibleItems, state.page, PAGE_SIZE);
     state.page = page.page;
     elements.results.replaceChildren(...page.items.map(buildCaseCard));
@@ -539,6 +651,7 @@ async function loadText(text, fileName, fileSize, saveRecent = true) {
     state.filter = 'all';
     state.query = '';
     state.page = 0;
+    initializeMediaAvailability();
 
     elements.fileName.textContent = fileName;
     elements.fileMeta.textContent =
